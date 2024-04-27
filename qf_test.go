@@ -339,7 +339,7 @@ func TestBasic(t *testing.T) {
 		ExpectedEntries:       uint64(len(testStrings)),
 		BitsOfStoragePerEntry: 4,
 		RBitsToDiscard:        8,
-		CustomAllocFn:         NewMmapVector(dir, false),
+		CustomAllocFn:         NewMmapVector(MmapConfig{dir, false}),
 	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
@@ -359,7 +359,7 @@ func TestDoubling(t *testing.T) {
 	dir := t.TempDir()
 	qf := NewWithConfig(Config{
 		RBitsToDiscard: 13,
-		CustomAllocFn:  NewMmapVector(dir, true),
+		CustomAllocFn:  NewMmapVector(MmapConfig{dir, true}),
 	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
@@ -379,8 +379,10 @@ func TestDoubling(t *testing.T) {
 
 func TestSerialization(t *testing.T) {
 	for _, packed := range []bool{false, true} {
+		dir := t.TempDir()
 		qf := NewWithConfig(Config{
-			BitPacked: packed,
+			BitPacked:     packed,
+			CustomAllocFn: NewMmapVector(MmapConfig{dir, packed}),
 		})
 		for _, s := range testStrings {
 			qf.InsertString(s)
@@ -391,7 +393,8 @@ func TestSerialization(t *testing.T) {
 		wt, err := qf.WriteTo(&buf)
 		assert.NoError(t, err)
 		qf = NewWithConfig(Config{
-			BitPacked: packed,
+			BitPacked:     packed,
+			CustomAllocFn: NewMmapVector(MmapConfig{dir, packed}),
 		})
 		rd, err2 := qf.ReadFrom(&buf)
 		assert.NoError(t, err2)
@@ -406,8 +409,10 @@ func TestSerialization(t *testing.T) {
 }
 
 func TestSerializationExternal(t *testing.T) {
+	dir := t.TempDir()
 	qf := NewWithConfig(Config{
 		BitsOfStoragePerEntry: uint(64 - bits.LeadingZeros64(uint64(len(testStrings)))),
+		CustomAllocFn:         NewMmapVector(MmapConfig{dir, false}),
 	})
 	last := ""
 	for i, s := range testStrings {
@@ -426,7 +431,9 @@ func TestSerializationExternal(t *testing.T) {
 	assert.NoError(t, err)
 
 	// read from should figure out that external storage is present
-	qf = New()
+	qf = NewWithConfig(Config{
+		CustomAllocFn: NewMmapVector(MmapConfig{dir, false}),
+	})
 
 	rd, err2 := qf.ReadFrom(&buf)
 	assert.NoError(t, err2)
@@ -647,7 +654,7 @@ func BenchmarkInsertBatches(b *testing.B) {
 					keys := randomKeys(batchSize, 32)
 					config := Config{ExpectedEntries: uint64(batchSize)}
 					if backend == "mmap" {
-						config.CustomAllocFn = NewMmapVector(b.TempDir(), false)
+						config.CustomAllocFn = NewMmapVector(MmapConfig{b.TempDir(), false})
 					}
 					qf := NewWithConfig(config)
 					for _, key := range keys {
