@@ -628,11 +628,21 @@ func BenchmarkUnpackedFilterLookup(b *testing.B) {
 }
 
 func BenchmarkInserts(b *testing.B) {
-	qf := NewWithConfig(Config{ExpectedEntries: uint64(b.N)})
-	numStrings := len(testStrings)
+	config := Config{
+		QuotientBits:          30,
+		BitsOfStoragePerEntry: 23,
+		MaxLoadingFactor:      0.95,
+		BitPacked:             true,
+		RBitsToDiscard:        21,
+	}
+	config.CustomAllocFn = NewMmapVector(MmapConfig{b.TempDir(), true})
+	qf := NewWithConfig(config)
 	b.ResetTimer()
+
+	keyBuf := make([]byte, 32)
 	for n := 0; n < b.N; n++ {
-		qf.InsertString(testStrings[n%numStrings])
+		_, _ = rand.Read(keyBuf)
+		qf.InsertStringWithValue(string(keyBuf), 290)
 	}
 }
 
@@ -652,9 +662,13 @@ func BenchmarkInsertBatches(b *testing.B) {
 			b.Run(fmt.Sprintf("%s,keys=%d", backend, batchSize), func(b *testing.B) {
 				for n := 0; n < b.N; n++ {
 					keys := randomKeys(batchSize, 32)
-					config := Config{ExpectedEntries: uint64(batchSize)}
+					config := Config{
+						QuotientBits:          30,
+						BitsOfStoragePerEntry: 23,
+						MaxLoadingFactor:      0.95,
+					}
 					if backend == "mmap" {
-						config.CustomAllocFn = NewMmapVector(MmapConfig{b.TempDir(), false})
+						config.CustomAllocFn = NewMmapVector(MmapConfig{b.TempDir(), true})
 					}
 					qf := NewWithConfig(config)
 					for _, key := range keys {

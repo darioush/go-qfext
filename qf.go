@@ -29,6 +29,20 @@ type Filter struct {
 	allocfn      VectorAllocateFn
 }
 
+func (qf *Filter) Close() error {
+	for _, q := range []Vector{qf.filter, qf.storage} {
+		if q == nil {
+			continue
+		}
+		if closer, ok := q.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Len returns the number of entries in the quotient filter
 func (qf *Filter) Len() uint64 {
 	return qf.entries
@@ -141,9 +155,9 @@ func NewWithConfig(c Config) *Filter {
 
 	qbits := c.QBits()
 
-	qf.initForQuotientBits(uint(qbits))
-
 	qf.config = c
+
+	qf.initForQuotientBits(uint(qbits))
 
 	qf.allocStorage()
 
@@ -314,15 +328,8 @@ func (qf *Filter) double() {
 	})
 
 	// shallow copy back over self
-	for _, q := range []Vector{qf.filter, qf.storage} {
-		if q == nil {
-			continue
-		}
-		if closer, ok := q.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				panic(err)
-			}
-		}
+	if err := qf.Close(); err != nil {
+		panic(err)
 	}
 	*qf = cpy
 }
