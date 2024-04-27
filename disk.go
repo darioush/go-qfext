@@ -24,6 +24,7 @@ type Disk struct {
 	f                       *os.File
 	filterRead, storageRead extReader
 	storageBits             uint
+	rBitsToDiscard          uint64
 }
 
 // OpenReadOnlyFromFile initializes a read only quotient filter
@@ -68,6 +69,15 @@ func OpenReadOnlyFromPath(path string) (*Disk, error) {
 	}
 	// XXX: handle variable hash functions
 	ext.hashfn = murmurhash64
+	if h.RBitsToDiscard > 0 {
+		ext.rBitsToDiscard = h.RBitsToDiscard
+		hashFn := ext.hashfn
+		newHashFn := func(v []byte) uint64 {
+			discardMask := ^uint64(0) << h.RBitsToDiscard
+			return hashFn(v) & discardMask
+		}
+		ext.hashfn = newHashFn
+	}
 	return &ext, nil
 }
 
@@ -113,13 +123,22 @@ func (ext *Disk) ContainsString(s string) bool {
 func (ext *Disk) Lookup(key []byte) (bool, uint64) {
 	dq, dr := hash(ext.hashfn, key, ext.rBits, ext.rMask)
 
-	var filterFn, storageFn readFn
-	filterFn = func(v uint64) uint64 {
+	var (
+		filterFn  readFn
+		storageFn storageReadFn
+	)
+	filterFn = func(v uint64) slotData {
 		x, err := ext.filterRead.Read(v)
 		if err != nil {
 			panic(fmt.Sprintf("error: %s", err))
 		}
-		return x
+		sd := slotData(x)
+		if ext.rBitsToDiscard > 0 {
+			sd.setR(
+				sd.r() << ext.rBitsToDiscard,
+			)
+		}
+		return sd
 	}
 	if ext.storageRead != nil {
 		storageFn = func(v uint64) uint64 {

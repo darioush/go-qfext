@@ -31,6 +31,8 @@ type QFHeader struct {
 	StorageBits uint64
 	// whether the quotient filters use bitpacked storage
 	BitPacked bool
+
+	RBitsToDiscard uint64
 }
 
 // ReadHeaderFromPath reads and returns the header from a serialized quotient filter
@@ -54,11 +56,12 @@ func ReadHeaderFromPath(path string) (*QFHeader, error) {
 // to architectures of differing word length or endianness
 func (qf *Filter) WriteTo(stream io.Writer) (i int64, err error) {
 	h := QFHeader{
-		Version:     qfVersion,
-		Entries:     qf.entries,
-		QBits:       uint64(qf.qBits),
-		StorageBits: uint64(qf.config.BitsOfStoragePerEntry),
-		BitPacked:   qf.config.BitPacked,
+		Version:        qfVersion,
+		Entries:        qf.entries,
+		QBits:          uint64(qf.qBits),
+		StorageBits:    uint64(qf.config.BitsOfStoragePerEntry),
+		BitPacked:      qf.config.BitPacked,
+		RBitsToDiscard: uint64(qf.config.RBitsToDiscard),
 	}
 	if err = binary.Write(stream, binary.LittleEndian, h); err != nil {
 		return

@@ -3,9 +3,10 @@
 package main
 
 import (
-	qfext ".."
 	"bytes"
 	"fmt"
+
+	qfext "github.com/facebookincubator/go-qfext"
 )
 
 func main() {
@@ -13,8 +14,17 @@ func main() {
 	// correctly
 
 	fmt.Printf("Example of analyzing size requirements:\n")
-	conf := qfext.Config{ExpectedEntries: 1000000000}
-	fmt.Printf("A billion entry quotient filter would be loaded at %f percent...\n",
+	conf := qfext.Config{
+		ExpectedEntries:       1000000000,
+		BitsOfStoragePerEntry: 23,
+		BitPacked:             true,
+		MaxLoadingFactor:      .9,
+		QuotientBits:          30,
+		RBitsToDiscard:        23,
+	}
+
+	fmt.Printf("A %d entry quotient filter would be loaded at %f percent...\n",
+		conf.ExpectedEntries,
 		conf.ExpectedLoading(),
 	)
 	conf.ExplainIndent("  ")

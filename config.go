@@ -4,12 +4,16 @@ package qf
 
 import "fmt"
 
-// minQBits is the initial number of quotient bits when no explicit
-// configuration is provided, and the minimum number of qbits supported
-//
-// implementation note:  minQBits must be greater than 3 as we require
-// 3 bits for quotient filter book keeping
-const minQBits = 4
+const (
+	// minQBits is the initial number of quotient bits when no explicit
+	// configuration is provided, and the minimum number of qbits supported
+	//
+	// implementation note:  minQBits must be greater than 3 as we require
+	// 3 bits for quotient filter book keeping
+	minQBits = 4
+
+	defaultMaxLoadingFactor = 0.65
+)
 
 // Config controls the behavior of the quotient filter
 type Config struct {
@@ -33,6 +37,14 @@ type Config struct {
 	// is set to the same hash function used when populating the quotient
 	// filter
 	HashFn HashFn
+
+	// MaxLoadingFactor specifies the boundary at which we will double
+	// the quotient filter hash table and also is used to initially size
+	// the table.
+	MaxLoadingFactor float64
+
+	QuotientBits   uint
+	RBitsToDiscard uint
 }
 
 // ExpectedLoading reports the expected percentage loading given the
@@ -44,7 +56,7 @@ func (c *Config) ExpectedLoading() float64 {
 // BytesRequired reports the approximate amount of space required to represent
 // the quotient filter on disk or in ram (assuming bit packing).
 func (c *Config) BytesRequired() uint {
-	bitsPerEntry := (64 - c.QBits()) + 3 + uint(c.BitsOfStoragePerEntry)
+	bitsPerEntry := (bitsPerWord - c.QBits() - c.RBitsToDiscard) + 3 + uint(c.BitsOfStoragePerEntry)
 	return c.BucketCount() * bitsPerEntry / 8
 }
 
@@ -59,9 +71,16 @@ func (c *Config) BucketCount() uint {
 func (c *Config) QBits() uint {
 	x := uint(1)
 	bits := uint(0)
-	for (float64(x) * MaxLoadingFactor) < float64(c.ExpectedEntries) {
+	maxLoadingFactor := defaultMaxLoadingFactor
+	if c.MaxLoadingFactor != 0 {
+		maxLoadingFactor = c.MaxLoadingFactor
+	}
+	for (float64(x) * maxLoadingFactor) < float64(c.ExpectedEntries) {
 		x <<= 1
 		bits++
+	}
+	if c.QuotientBits > 0 {
+		bits = c.QuotientBits
 	}
 	if bits < minQBits {
 		bits = minQBits
@@ -72,7 +91,7 @@ func (c *Config) QBits() uint {
 // ExplainIndent will print an indented summary of the configuration to stdout
 func (c *Config) ExplainIndent(indent string) {
 	fmt.Printf("%s%2d bits configured for quotient (%d buckets)\n", indent, c.QBits(), c.BucketCount())
-	fmt.Printf("%s%2d bits needed per bucket for remainder\n", indent, bitsPerWord-c.QBits())
+	fmt.Printf("%s%2d bits needed per bucket for remainder\n", indent, bitsPerWord-c.QBits()-c.RBitsToDiscard)
 	fmt.Printf("%s%2d bits metadata per bucket\n", indent, 3)
 	fmt.Printf("%s%2d bits external storage\n", indent, c.BitsOfStoragePerEntry)
 	fmt.Printf("%s   %s storage size expected\n", indent, humanBytes(c.BytesRequired()))

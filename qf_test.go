@@ -32,7 +32,7 @@ func (qf *Filter) checkConsistency() error {
 			continue
 		}
 		dq := i
-		runStart := findStart(dq, qf.size, qf.filter.Get)
+		runStart := findStart(dq, qf.size, qf.read)
 		// ok, for bucket dq we've got a run starting at runStart
 		for {
 			who, used := usage[runStart]
@@ -335,6 +335,7 @@ func TestBasic(t *testing.T) {
 	qf := NewWithConfig(Config{
 		ExpectedEntries:       uint64(len(testStrings)),
 		BitsOfStoragePerEntry: 4,
+		RBitsToDiscard:        8,
 	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
@@ -351,7 +352,9 @@ func TestBasic(t *testing.T) {
 
 // if we don't explicitly size the qf, it should grow on demand
 func TestDoubling(t *testing.T) {
-	qf := New()
+	qf := NewWithConfig(Config{
+		RBitsToDiscard: 13,
+	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
 		qf.checkConsistency()
@@ -514,6 +517,7 @@ func TestReadOnlyFromDisk(t *testing.T) {
 		qf := NewWithConfig(Config{
 			BitsOfStoragePerEntry: uint(64 - bits.LeadingZeros64(uint64(len(testStrings)))),
 			BitPacked:             packed,
+			RBitsToDiscard:        12,
 		})
 		// first, populate quotient filter
 		last := ""

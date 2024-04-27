@@ -8,7 +8,10 @@ import "io"
 // 'size' integers of 'bits' width
 type VectorAllocateFn func(bits uint, size uint64) Vector
 
-type readFn func(ix uint64) uint64
+type (
+	readFn        func(ix uint64) slotData
+	storageReadFn func(ix uint64) uint64
+)
 
 // Vector stores a fixed size contiguous array of integer data
 type Vector interface {
