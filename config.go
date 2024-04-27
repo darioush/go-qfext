@@ -43,6 +43,8 @@ type Config struct {
 	// the table.
 	MaxLoadingFactor float64
 
+	CustomAllocFn VectorAllocateFn
+
 	QuotientBits   uint
 	RBitsToDiscard uint
 }

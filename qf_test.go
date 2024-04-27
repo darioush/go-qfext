@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"testing"
 
+	"crypto/rand"
+
 	murmur "github.com/aviddiviner/go-murmur"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/stretchr/testify/assert"
@@ -332,10 +334,12 @@ var testStrings = []string{
 }
 
 func TestBasic(t *testing.T) {
+	dir := t.TempDir()
 	qf := NewWithConfig(Config{
 		ExpectedEntries:       uint64(len(testStrings)),
 		BitsOfStoragePerEntry: 4,
 		RBitsToDiscard:        8,
+		CustomAllocFn:         NewMmapVector(dir, false),
 	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
@@ -352,19 +356,24 @@ func TestBasic(t *testing.T) {
 
 // if we don't explicitly size the qf, it should grow on demand
 func TestDoubling(t *testing.T) {
+	dir := t.TempDir()
 	qf := NewWithConfig(Config{
 		RBitsToDiscard: 13,
+		CustomAllocFn:  NewMmapVector(dir, true),
 	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
-		qf.checkConsistency()
+		assert.NoError(t, qf.checkConsistency())
 		if !assert.True(t, qf.ContainsString(s), "%q missing after insertion", s) {
 			qf.DebugDump(true)
 			return
 		}
 	}
 	for _, s := range testStrings {
-		assert.True(t, qf.ContainsString(s), "%q missing after construction", s)
+		if !assert.True(t, qf.ContainsString(s), "%q missing after construction", s) {
+			qf.DebugDump(false)
+			return
+		}
 	}
 }
 
@@ -608,6 +617,45 @@ func BenchmarkUnpackedFilterLookup(b *testing.B) {
 
 	for n := 0; n < b.N; n++ {
 		qf.ContainsString(testStrings[n%numStrings])
+	}
+}
+
+func BenchmarkInserts(b *testing.B) {
+	qf := NewWithConfig(Config{ExpectedEntries: uint64(b.N)})
+	numStrings := len(testStrings)
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		qf.InsertString(testStrings[n%numStrings])
+	}
+}
+
+func randomKeys(numKeys, keyLen int) []string {
+	keys := make([]string, numKeys)
+	for i := 0; i < numKeys; i++ {
+		keyBytes := make([]byte, keyLen)
+		rand.Read(keyBytes)
+		keys[i] = string(keyBytes)
+	}
+	return keys
+}
+
+func BenchmarkInsertBatches(b *testing.B) {
+	for _, backend := range []string{"mmap", "memory"} {
+		for _, batchSize := range []int{25_000, 50_000, 100_000, 500_000, 1_000_000} {
+			b.Run(fmt.Sprintf("%s,keys=%d", backend, batchSize), func(b *testing.B) {
+				for n := 0; n < b.N; n++ {
+					keys := randomKeys(batchSize, 32)
+					config := Config{ExpectedEntries: uint64(batchSize)}
+					if backend == "mmap" {
+						config.CustomAllocFn = NewMmapVector(b.TempDir(), false)
+					}
+					qf := NewWithConfig(config)
+					for _, key := range keys {
+						qf.InsertStringWithValue(key, 290)
+					}
+				}
+			})
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ package qf
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"unsafe"
 )
@@ -117,9 +118,12 @@ func NewWithConfig(c Config) *Filter {
 	if c.MaxLoadingFactor == 0 {
 		c.MaxLoadingFactor = defaultMaxLoadingFactor
 	}
-	if c.BitPacked {
+	switch {
+	case c.CustomAllocFn != nil:
+		qf.allocfn = c.CustomAllocFn
+	case c.BitPacked:
 		qf.allocfn = BitPackedVectorAllocate
-	} else {
+	default:
 		qf.allocfn = UnpackedVectorAllocate
 	}
 	if c.HashFn == nil {
@@ -310,6 +314,16 @@ func (qf *Filter) double() {
 	})
 
 	// shallow copy back over self
+	for _, q := range []Vector{qf.filter, qf.storage} {
+		if q == nil {
+			continue
+		}
+		if closer, ok := q.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				panic(err)
+			}
+		}
+	}
 	*qf = cpy
 }
 

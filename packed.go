@@ -130,7 +130,7 @@ func getValFromPackedIx(ix uint64, bits uint, read func(off uint64, cnt uint64) 
 	return
 }
 
-func (p packed) WriteTo(stream io.Writer) (n int64, err error) {
+func (p *packed) WriteTo(stream io.Writer) (n int64, err error) {
 	h := packedHeader{
 		Bits:    uint64(p.bits),
 		Size:    p.size,
