@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"testing"
 
+	"crypto/rand"
+
 	murmur "github.com/aviddiviner/go-murmur"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/stretchr/testify/assert"
@@ -32,7 +34,7 @@ func (qf *Filter) checkConsistency() error {
 			continue
 		}
 		dq := i
-		runStart := findStart(dq, qf.size, qf.filter.Get)
+		runStart := findStart(dq, qf.size, qf.read)
 		// ok, for bucket dq we've got a run starting at runStart
 		for {
 			who, used := usage[runStart]
@@ -332,9 +334,12 @@ var testStrings = []string{
 }
 
 func TestBasic(t *testing.T) {
+	dir := t.TempDir()
 	qf := NewWithConfig(Config{
 		ExpectedEntries:       uint64(len(testStrings)),
 		BitsOfStoragePerEntry: 4,
+		RBitsToDiscard:        8,
+		CustomAllocFn:         NewMmapVector(MmapConfig{dir, false}),
 	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
@@ -351,24 +356,33 @@ func TestBasic(t *testing.T) {
 
 // if we don't explicitly size the qf, it should grow on demand
 func TestDoubling(t *testing.T) {
-	qf := New()
+	dir := t.TempDir()
+	qf := NewWithConfig(Config{
+		RBitsToDiscard: 13,
+		CustomAllocFn:  NewMmapVector(MmapConfig{dir, true}),
+	})
 	for _, s := range testStrings {
 		qf.InsertString(s)
-		qf.checkConsistency()
+		assert.NoError(t, qf.checkConsistency())
 		if !assert.True(t, qf.ContainsString(s), "%q missing after insertion", s) {
 			qf.DebugDump(true)
 			return
 		}
 	}
 	for _, s := range testStrings {
-		assert.True(t, qf.ContainsString(s), "%q missing after construction", s)
+		if !assert.True(t, qf.ContainsString(s), "%q missing after construction", s) {
+			qf.DebugDump(false)
+			return
+		}
 	}
 }
 
 func TestSerialization(t *testing.T) {
 	for _, packed := range []bool{false, true} {
+		dir := t.TempDir()
 		qf := NewWithConfig(Config{
-			BitPacked: packed,
+			BitPacked:     packed,
+			CustomAllocFn: NewMmapVector(MmapConfig{dir, packed}),
 		})
 		for _, s := range testStrings {
 			qf.InsertString(s)
@@ -379,7 +393,8 @@ func TestSerialization(t *testing.T) {
 		wt, err := qf.WriteTo(&buf)
 		assert.NoError(t, err)
 		qf = NewWithConfig(Config{
-			BitPacked: packed,
+			BitPacked:     packed,
+			CustomAllocFn: NewMmapVector(MmapConfig{dir, packed}),
 		})
 		rd, err2 := qf.ReadFrom(&buf)
 		assert.NoError(t, err2)
@@ -394,8 +409,10 @@ func TestSerialization(t *testing.T) {
 }
 
 func TestSerializationExternal(t *testing.T) {
+	dir := t.TempDir()
 	qf := NewWithConfig(Config{
 		BitsOfStoragePerEntry: uint(64 - bits.LeadingZeros64(uint64(len(testStrings)))),
+		CustomAllocFn:         NewMmapVector(MmapConfig{dir, false}),
 	})
 	last := ""
 	for i, s := range testStrings {
@@ -414,7 +431,9 @@ func TestSerializationExternal(t *testing.T) {
 	assert.NoError(t, err)
 
 	// read from should figure out that external storage is present
-	qf = New()
+	qf = NewWithConfig(Config{
+		CustomAllocFn: NewMmapVector(MmapConfig{dir, false}),
+	})
 
 	rd, err2 := qf.ReadFrom(&buf)
 	assert.NoError(t, err2)
@@ -514,6 +533,7 @@ func TestReadOnlyFromDisk(t *testing.T) {
 		qf := NewWithConfig(Config{
 			BitsOfStoragePerEntry: uint(64 - bits.LeadingZeros64(uint64(len(testStrings)))),
 			BitPacked:             packed,
+			RBitsToDiscard:        12,
 		})
 		// first, populate quotient filter
 		last := ""
@@ -604,6 +624,59 @@ func BenchmarkUnpackedFilterLookup(b *testing.B) {
 
 	for n := 0; n < b.N; n++ {
 		qf.ContainsString(testStrings[n%numStrings])
+	}
+}
+
+func BenchmarkInserts(b *testing.B) {
+	config := Config{
+		QuotientBits:          30,
+		BitsOfStoragePerEntry: 23,
+		MaxLoadingFactor:      0.95,
+		BitPacked:             true,
+		RBitsToDiscard:        21,
+	}
+	config.CustomAllocFn = NewMmapVector(MmapConfig{b.TempDir(), true})
+	qf := NewWithConfig(config)
+	b.ResetTimer()
+
+	keyBuf := make([]byte, 32)
+	for n := 0; n < b.N; n++ {
+		_, _ = rand.Read(keyBuf)
+		qf.InsertStringWithValue(string(keyBuf), 290)
+	}
+}
+
+func randomKeys(numKeys, keyLen int) []string {
+	keys := make([]string, numKeys)
+	for i := 0; i < numKeys; i++ {
+		keyBytes := make([]byte, keyLen)
+		rand.Read(keyBytes)
+		keys[i] = string(keyBytes)
+	}
+	return keys
+}
+
+func BenchmarkInsertBatches(b *testing.B) {
+	for _, backend := range []string{"mmap", "memory"} {
+		for _, batchSize := range []int{25_000, 50_000, 100_000, 500_000, 1_000_000} {
+			b.Run(fmt.Sprintf("%s,keys=%d", backend, batchSize), func(b *testing.B) {
+				for n := 0; n < b.N; n++ {
+					keys := randomKeys(batchSize, 32)
+					config := Config{
+						QuotientBits:          30,
+						BitsOfStoragePerEntry: 23,
+						MaxLoadingFactor:      0.95,
+					}
+					if backend == "mmap" {
+						config.CustomAllocFn = NewMmapVector(MmapConfig{b.TempDir(), true})
+					}
+					qf := NewWithConfig(config)
+					for _, key := range keys {
+						qf.InsertStringWithValue(key, 290)
+					}
+				}
+			})
+		}
 	}
 }
 

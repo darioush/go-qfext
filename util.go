@@ -29,6 +29,18 @@ func unsafeUint64SliceToBytes(space []uint64) []byte {
 	return *(*[]byte)(unsafe.Pointer(&header))
 }
 
+func unsafeBytesToUint64Slice(data []byte) []uint64 {
+	// Get the slice header
+	header := *(*reflect.SliceHeader)(unsafe.Pointer(&data))
+
+	// The length and capacity of the slice are different.
+	header.Len /= bytesPerWord
+	header.Cap /= bytesPerWord
+
+	// Convert slice header to an []uint64
+	return *(*[]uint64)(unsafe.Pointer(&header))
+}
+
 func writeUintSlice(w io.Writer, v []uint64) (n int64, err error) {
 	if err = binary.Write(w, binary.LittleEndian, uint64(len(v))); err != nil {
 		return

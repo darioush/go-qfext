@@ -10,14 +10,10 @@ package qf
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"unsafe"
 )
-
-// MaxLoadingFactor specifies the boundary at which we will double
-// the quotient filter hash table and also is used to initially size
-// the table.
-const MaxLoadingFactor = 0.65
 
 // Filter is a quotient filter representation
 type Filter struct {
@@ -31,6 +27,20 @@ type Filter struct {
 	config       Config
 	hashfn       HashFn
 	allocfn      VectorAllocateFn
+}
+
+func (qf *Filter) Close() error {
+	for _, q := range []Vector{qf.filter, qf.storage} {
+		if q == nil {
+			continue
+		}
+		if closer, ok := q.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Len returns the number of entries in the quotient filter
@@ -119,21 +129,35 @@ func New() *Filter {
 // supplied configuration
 func NewWithConfig(c Config) *Filter {
 	var qf Filter
-	if c.BitPacked {
+	if c.MaxLoadingFactor == 0 {
+		c.MaxLoadingFactor = defaultMaxLoadingFactor
+	}
+	switch {
+	case c.CustomAllocFn != nil:
+		qf.allocfn = c.CustomAllocFn
+	case c.BitPacked:
 		qf.allocfn = BitPackedVectorAllocate
-	} else {
+	default:
 		qf.allocfn = UnpackedVectorAllocate
 	}
 	if c.HashFn == nil {
 		c.HashFn = murmurhash64
 	}
 	qf.hashfn = c.HashFn
+	if c.RBitsToDiscard > 0 {
+		hashFn := qf.hashfn
+		newHashFn := func(v []byte) uint64 {
+			discardMask := ^uint64(0) << c.RBitsToDiscard
+			return hashFn(v) & discardMask
+		}
+		qf.hashfn = newHashFn
+	}
 
 	qbits := c.QBits()
 
-	qf.initForQuotientBits(uint(qbits))
-
 	qf.config = c
+
+	qf.initForQuotientBits(uint(qbits))
 
 	qf.allocStorage()
 
@@ -150,7 +174,7 @@ func (qf *Filter) BitsOfStoragePerEntry() uint {
 }
 
 func (qf *Filter) allocStorage() {
-	qf.filter = qf.allocfn(3+bitsPerWord-qf.qBits, qf.size)
+	qf.filter = qf.allocfn(3+bitsPerWord-qf.qBits-qf.config.RBitsToDiscard, qf.size)
 	if qf.config.BitsOfStoragePerEntry > 0 {
 		qf.storage = qf.allocfn(qf.config.BitsOfStoragePerEntry, qf.size)
 	}
@@ -164,7 +188,7 @@ func (qf *Filter) initForQuotientBits(qBits uint) {
 	for i := uint(0); i < qf.rBits; i++ {
 		qf.rMask |= 1 << i
 	}
-	qf.maxEntries = uint64(math.Ceil(float64(qf.size) * MaxLoadingFactor))
+	qf.maxEntries = uint64(math.Ceil(float64(qf.size) * qf.config.MaxLoadingFactor))
 }
 
 func initForQuotientBits(qBits uint) (rBits uint, rMask, size uint64) {
@@ -234,10 +258,17 @@ func (sd *slotData) setR(r uint64) {
 }
 
 func (qf *Filter) read(slot uint64) slotData {
-	return slotData(qf.filter.Get(slot))
+	sd := slotData(qf.filter.Get(slot))
+	sd.setR(
+		sd.r() << uint64(qf.config.RBitsToDiscard),
+	)
+	return sd
 }
 
 func (qf *Filter) write(slot uint64, sd slotData) {
+	sd.setR(
+		sd.r() >> uint64(qf.config.RBitsToDiscard),
+	)
 	qf.filter.Set(slot, uint64(sd))
 }
 
@@ -297,6 +328,9 @@ func (qf *Filter) double() {
 	})
 
 	// shallow copy back over self
+	if err := qf.Close(); err != nil {
+		panic(err)
+	}
 	*qf = cpy
 }
 
@@ -344,7 +378,7 @@ func (qf *Filter) insertByHash(dq, dr, value uint64) bool {
 	// ok, let's find the start
 	runStart := dq
 	if sd.shifted() {
-		runStart = findStart(dq, qf.size, qf.filter.Get)
+		runStart = findStart(dq, qf.size, qf.read)
 	}
 	// now let's find the spot within the run
 	slot := runStart
@@ -462,14 +496,14 @@ func (qf *Filter) ContainsString(s string) bool {
 // exists, and the value stored with it (if any)
 func (qf *Filter) Lookup(key []byte) (bool, uint64) {
 	dq, dr := hash(qf.hashfn, key, qf.rBits, qf.rMask)
-	var storageFn readFn
+	var storageFn storageReadFn
 	if qf.storage != nil {
 		storageFn = qf.storage.Get
 	}
-	return lookupByHash(dq, dr, qf.size, qf.filter.Get, storageFn)
+	return lookupByHash(dq, dr, qf.size, qf.read, storageFn)
 }
 
-func lookupByHash(dq, dr, size uint64, read, storage readFn) (bool, uint64) {
+func lookupByHash(dq, dr, size uint64, read readFn, storage storageReadFn) (bool, uint64) {
 	sd := slotData(read(dq))
 	if !sd.occupied() {
 		return false, 0
